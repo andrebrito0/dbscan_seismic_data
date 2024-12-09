@@ -6,6 +6,6 @@ The distance values calculated with the proposed distance index will be used in 
 
 This approach could be used to study how often seismic activity is expected from a specific geological structure and how these structures interact with each other.
 
-![Geogrphical representation of earthquakes based on their magnitude.]([http://url/to/img.png](https://github.com/andrebrito0/dbscan_seismic_data/blob/main/map.pdf)
+![Geogrphical representation of earthquakes based on their magnitude.](https://github.com/andrebrito0/dbscan_seismic_data/blob/main/map.pdf)
 
-![Geogrphical representation of seismic clusters.]([http://url/to/img.png](https://github.com/andrebrito0/dbscan_seismic_data/blob/main/map.pdf)
+![Geogrphical representation of seismic clusters.](https://github.com/andrebrito0/dbscan_seismic_data/blob/main/mapST.pdf)
