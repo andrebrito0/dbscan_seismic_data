@@ -1,0 +1,789 @@
+---
+title: "Projeto Sem AEIO"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include = False}
+library(tidyverse)
+library(MASS)
+library(readxl)
+library(arm)
+library(sf)
+library(raster)
+library(dplyr)
+library(spData)
+#library(spDataLarge)
+library(tmap)    # for static and interactive maps
+library(leaflet) # for interactive maps
+library(ggplot2) # tidyverse data visualization package
+library(rgeos)
+library(ggspatial)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(geosphere)
+library(Cairo)
+library(dbscan)
+library(e1071)
+library(RColorBrewer)
+library(plotly)
+```
+
+```{r}
+data<- read_xls("Dados.xls",col_names = T)
+str(data)
+
+#Reduzir todas as observações ao lado de Portugal Continental
+
+dataPC <- data[data$Long < -6,]
+colnames(dataPC) <- c("Date", "Latitude", "Longitude", "Magnitude")
+
+min(dataPC$Date)
+max(dataPC$Date)
+```
+
+
+
+```{r}
+theme_set(theme_bw())
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+class(world)
+
+```
+
+```{r}
+longmin <- min(dataPC$Longitude)
+longmax <- max(dataPC$Longitude)
+
+latmin <- min(dataPC$Latitude)
+latmax <- max(dataPC$Latitude)
+```
+
+
+```{r}
+ggplot(data = world) +
+    geom_sf(fill= "antiquewhite") +
+    annotation_scale(location = "tr", width_hint = 0.5) +
+    annotation_north_arrow(location = "tr", which_north = "true", 
+        pad_x = unit(0.5, "in"), pad_y = unit(0.5, "in"),
+        style = north_arrow_fancy_orienteering) +
+    coord_sf(xlim = c( longmin - 1 , longmax + 1 ), ylim = c(latmin - 1 , latmax + 4), expand = FALSE) + theme(panel.grid.major = element_line(color = gray(.5), linetype = "dashed", size = 0.5), panel.background = element_rect(fill = "aliceblue")) +
+    geom_point(data = dataPC, aes(x = Longitude , y = Latitude), size = scale(dataPC$Magnitude), shape = 1 , col = "red")
+```
+
+```{r}
+S.Mag0 <- dataPC[dataPC$Magnitude>0,]
+
+ggplot(data = world) +
+    geom_sf(fill= "antiquewhite") +
+    annotation_scale(location = "tr", width_hint = 0.5) +
+    annotation_north_arrow(location = "tr", which_north = "true", 
+        pad_x = unit(0.75, "in"), pad_y = unit(0.5, "in"),
+        style = north_arrow_fancy_orienteering) +
+    coord_sf(xlim = c( longmin - 1 , longmax + 1 ), ylim = c(latmin - 1 , latmax + 4), expand = FALSE) + theme(panel.grid.major = element_line(color = gray(.5), linetype = "dashed", size = 0.5), panel.background = element_rect(fill = "aliceblue")) +
+    geom_point(data = S.Mag0, aes(x = Longitude , y = Latitude), size = scale(S.Mag0$Magnitude)/3, shape = 1 , col = "red")
+ggsave("map.pdf")
+ggsave("map_web.png", width = 5, height = 7.5, dpi = "screen")
+```
+
+
+
+# Análise Exploratória
+
+## Número de Eventos
+
+```{r}
+breaks <- seq(1900, 1999 ,1)
+CairoPDF("hist",width = 6 , height = 3,fonts = 3,pointsize = 3)
+#par(mfrow = c(1, 2))
+CairoPDF("histSw")
+hist(S.Mag0$Date,breaks = breaks, main = "", xlab = "Year")
+dev.off()
+CairoPDF("histSa")
+hist(dataPC$Date,breaks = breaks, main = "", xlab = "Year")
+dev.off()
+```
+
+## Magnitude
+
+```{r}
+min(S.Mag0$Magnitude)
+max(S.Mag0$Magnitude)
+breaks = seq(0,8,0.5)
+CairoPDF("magnitude")
+hist(S.Mag0$Magnitude,breaks=breaks, main = "", xlab = "Magnitude", prob = T)
+dev.off()
+
+res <- S.Mag0$Magnitude
+
+mean(res)
+sqrt(var(res))
+skewness(res)
+max(res)
+min(res)
+
+
+quantile(res,0.1)
+quantile(res,0.25)
+quantile(res,0.5)
+quantile(res,0.75)
+quantile(res,0.9)
+```
+
+## Diferença entre tempo de ocorrência de eventos
+
+```{r}
+aux <- S.Mag0$Date[order(S.Mag0$Date)]
+res <- numeric(length(aux))
+for(i in 1:(length(aux)-1)){
+  res[i] <- aux[i+1]-aux[i]
+}
+CairoPDF("time difference")
+hist(res, main = "", prob = T, xlab = "Time difference" , breaks = seq(0,3,0.2), ylim = c(0,5))
+dev.off()
+
+mean(res)
+sqrt(var(res))
+skewness(res)
+max(res)
+min(res)
+
+
+quantile(res,0.1)
+quantile(res,0.25)
+quantile(res,0.5)
+quantile(res,0.75)
+quantile(res,0.9)
+```
+
+## Distribuição do número de eventos anuais
+
+```{r}
+CairoPDF("Number os seismic events per year")
+No.events <- hist(S.Mag0$Date, breaks = seq(1900,1992,1) ,plot = F)
+hist(No.events$counts, prob = T, main = "", xlab = "Number of events", breaks = seq(0,100,5))
+dev.off()
+
+mean(No.events$counts)
+sqrt(var(No.events$counts))
+skewness(No.events$counts)
+max(No.events$counts)
+min(No.events$counts)
+
+quantile(No.events$counts,0.1)
+quantile(No.events$counts,0.25)
+quantile(No.events$counts,0.5)
+quantile(No.events$counts,0.75)
+quantile(No.events$counts,0.9)
+```
+
+# DBSCAN
+```{r}
+dist.ST <- matrix(0,nrow = nrow(S.Mag0),ncol = nrow(S.Mag0))
+kt<-0
+ks<-0
+for(i in c(1:nrow(S.Mag0))){
+    p1 <- c(S.Mag0[i,]);
+    for(j in c(1:i)){
+        p2 <- c(S.Mag0[j,])
+            dist.ST[i,j] <-kt*(p1$Date-p2$Date)^2+ (1-ks*max(p1$Magnitude,p2$Magnitude))*distHaversine(c(p1$Longitude,p1$Latitude),c(p2$Longitude,p2$Latitude), r=6378137/1000)
+        }
+}
+dist.ST <- as.dist(dist.ST)
+```
+
+
+```{r}
+kt<-0
+res <- dbscan(dist.ST, eps = 1/(1-kt)*15, minPts = 5, borderPoints = T)
+res
+cluster.ST <- res$cluster
+aux <- length(unique(res$cluster))
+
+mycolors <- colorRampPalette(brewer.pal(8, "Set2"))(aux)
+
+
+ggplot(data = world) +
+    geom_sf(fill= "antiquewhite") +
+    annotation_scale(location = "tr", width_hint = 0.5) +
+    annotation_north_arrow(location = "tr", which_north = "true", 
+        pad_x = unit(0.5, "in"), pad_y = unit(0.5, "in"),
+        style = north_arrow_fancy_orienteering) +
+    coord_sf(xlim = c( longmin - 1 , longmax + 1 ), ylim = c(latmin - 1 , latmax + 4), expand = FALSE) + theme(panel.grid.major = element_line(color = gray(.5), linetype = "dashed", size = 0.5), panel.background = element_rect(fill = "aliceblue")) +
+    geom_point(data = S.Mag0, aes(x = Longitude , y = Latitude), size =0.01, shape = 1 , col = cluster.ST+1)+ scale_fill_manual(values = mycolors)
+ggsave("mapST.pdf") 
+```
+
+
+
+
+
+```{r}
+S.Mag0.ST <- S.Mag0
+S.Mag0.ST$clusters <- cluster.ST
+S.Mag0.ST <- S.Mag0.ST[S.Mag0.ST$clusters != 0,]
+S.Mag0.ST
+
+fig <- plot_ly(data = S.Mag0.ST , x = ~Longitude, y=~Latitude,z=~Date, color = ~clusters, colors = mycolors)
+fig <- fig %>% add_markers()
+fig <- fig %>% layout(scene = list(xaxis = list(title = 'Longitude'),
+                     yaxis = list(title = 'Latitude'),
+                     zaxis = list(title = 'Time')))
+fig
+
+clusters.chosen <- as.numeric(which(drop(table(cluster.ST)>50)))-1
+
+ST.aux <- S.Mag0.ST[S.Mag0.ST$clusters %in% clusters.chosen,]
+```
+
+```{r}
+aux <- numeric(length(ST.aux$clusters))
+cnt <- seq(1,length(unique(ST.aux$clusters)),1)
+cor <- unique(ST.aux$clusters)
+for(i in c(1:length(ST.aux$clusters))){
+  clus <- ST.aux$clusters[i];
+  aux[i]<-match(clus,cor)+1
+}
+
+table(ST.aux$clusters,aux)
+```
+
+
+```{r}
+ggplot(data = world) +
+    geom_sf(fill= "antiquewhite") +
+    annotation_scale(location = "tr", width_hint = 0.5) +
+    annotation_north_arrow(location = "tr", which_north = "true", 
+        pad_x = unit(0.5, "in"), pad_y = unit(0.5, "in"),
+        style = north_arrow_fancy_orienteering) +
+    coord_sf(xlim = c( longmin - 1 , longmax + 1 ), ylim = c(latmin - 1 , latmax + 4), expand = FALSE) + theme(panel.grid.major = element_line(color = gray(.5), linetype = "dashed", size = 0.5), panel.background = element_rect(fill = "aliceblue")) +
+    geom_point(data = ST.aux, aes(x = Longitude , y = Latitude), size =0.01, shape = 1 , col = aux)+ 
+  annotate(geom = "label", x = -12, y = 36, label = "C17", 
+    fontface = "italic", color = "lightblue", size = 3)+
+  annotate(geom = "label", x = -11, y = 37, label = "C20", 
+    fontface = "italic", color = "purple", size = 3)+
+  annotate(geom = "label", x = -8, y = 35, label = "C6", 
+    fontface = "italic", color = "red", size = 3)+
+  annotate(geom = "label", x = -11, y = 39, label = "C1", 
+    fontface = "italic", color = "green", size = 3)+
+  annotate(geom = "label", x = -6.5, y = 39, label = "C5", 
+    fontface = "italic", color = "blue", size = 3)+
+ggsave("clusters.for.comparison.pdf",width=3,height = 5, dpi = "screen")
+```
+
+
+
+```{r}
+unique(ST.aux$clusters)
+set1 <- ST.aux[ST.aux$clusters== 1,]
+set6 <- ST.aux[ST.aux$clusters== 6,]
+set5 <- ST.aux[ST.aux$clusters== 5,]
+set17 <- ST.aux[ST.aux$clusters== 17,]
+set20 <- ST.aux[ST.aux$clusters== 20,]
+```
+
+#### Annual Seismicity
+```{r}
+No.events <- hist(set20$Date, breaks = seq(1900,1992,1) ,plot = F)
+hist(No.events$counts, prob = T, main = "", xlab = "Number of events", breaks = seq(0,100,5))
+
+round(mean(No.events$counts),3)
+round(sqrt(var(No.events$counts)),3)
+round(skewness(No.events$counts),3)
+round(max(No.events$counts),3)
+round(min(No.events$counts),3)
+
+quantile(No.events$counts,0.1)
+quantile(No.events$counts,0.25)
+quantile(No.events$counts,0.5)
+quantile(No.events$counts,0.75)
+quantile(No.events$counts,0.9)
+```
+
+#### Magnitude
+
+```{r}
+res <- set20$Magnitude
+
+round(mean(res),3)
+round(sqrt(var(res)),3)
+round(skewness(res),3)
+round(max(res),3)
+round(min(res),3)
+
+
+quantile(res,0.1)
+quantile(res,0.25)
+quantile(res,0.5)
+quantile(res,0.75)
+quantile(res,0.9)
+```
+
+#### Time
+```{r}
+aux <- set20$Date[order(set20$Date)]
+res <- numeric(length(aux))
+for(i in 1:(length(aux)-1)){
+  res[i] <- aux[i+1]-aux[i]
+}
+
+round(mean(res),3)
+round(sqrt(var(res)),3)
+round(skewness(res),3)
+round(max(res),3)
+round(min(res),3)
+
+
+round(quantile(res,0.1),3)
+round(quantile(res,0.25),3)
+round(quantile(res,0.5),3)
+round(quantile(res,0.75),3)
+round(quantile(res,0.9),3)
+
+```
+
+
+## DBSCAN with T
+```{r}
+dist.T <- matrix(0,nrow = nrow(S.Mag0),ncol = nrow(S.Mag0))
+kt<-0.25
+ks<-0
+for(i in c(1:nrow(S.Mag0))){
+    p1 <- c(S.Mag0[i,]);
+    for(j in c(1:i)){
+        p2 <- c(S.Mag0[j,])
+            dist.T[i,j] <-kt*(p1$Date-p2$Date)^2+ (1-ks*max(p1$Magnitude,p2$Magnitude))*distHaversine(c(p1$Longitude,p1$Latitude),c(p2$Longitude,p2$Latitude), r=6378137/1000)
+        }
+}
+dist.T <- as.dist(dist.T)
+```
+
+
+```{r}
+res <- dbscan(dist.T, eps = 1/(1-kt)*15, minPts = 5,borderPoints = T)
+cluster.T <- res$cluster
+aux<-length(unique(res$cluster))
+mycolors <- colorRampPalette(brewer.pal(8, "Set2"))(aux)
+res
+
+ggplot(data = world) +
+    geom_sf(fill= "antiquewhite") +
+    annotation_scale(location = "tr", width_hint = 0.5) +
+    annotation_north_arrow(location = "tr", which_north = "true", 
+        pad_x = unit(0.5, "in"), pad_y = unit(0.5, "in"),
+        style = north_arrow_fancy_orienteering) +
+    coord_sf(xlim = c( longmin - 1 , longmax + 1 ), ylim = c(latmin - 1 , latmax + 4), expand = FALSE) + theme(panel.grid.major = element_line(color = gray(.5), linetype = "dashed", size = 0.5), panel.background = element_rect(fill = "aliceblue")) +
+    geom_point(data = S.Mag0, aes(x = Longitude , y = Latitude), size =0.01, shape = 1 , col = cluster.T+1)+ scale_fill_manual(values = mycolors)
+ggsave("mapT.pdf")
+```
+
+```{r}
+S.Mag0.T <- S.Mag0
+S.Mag0.T$clusters <- as.factor(cluster.T)
+S.Mag0.T <- S.Mag0.T[S.Mag0.T$clusters != 0,]
+S.Mag0.T
+
+fig <- plot_ly(data = S.Mag0.T , x = ~Longitude, y=~Latitude,z=~Date, color = ~clusters, colors = mycolors, size = 5)
+fig <- fig %>% add_markers()
+fig <- fig %>% layout(scene = list(xaxis = list(title = 'Longitude'),
+                     yaxis = list(title = 'Latitude'),
+                     zaxis = list(title = 'Time')))
+fig
+```
+
+## DBSCAN with T and S
+
+```{r}
+dist.Tk <- matrix(0,nrow = nrow(S.Mag0),ncol = nrow(S.Mag0))
+kt<-0.25
+ks<-0.05
+for(i in c(1:nrow(S.Mag0))){
+    p1 <- c(S.Mag0[i,]);
+    for(j in c(1:i)){
+        p2 <- c(S.Mag0[j,])
+            dist.Tk[i,j] <-kt*(p1$Date-p2$Date)^2+ (1-ks*max(p1$Magnitude,p2$Magnitude))*distHaversine(c(p1$Longitude,p1$Latitude),c(p2$Longitude,p2$Latitude), r=6378137/1000)
+        }
+}
+dist.Tk <- as.dist(dist.Tk)
+```
+
+```{r}
+res <- dbscan(dist.Tk, eps = 1/(1-kt)*15, minPts = 5,borderPoints = T)
+cluster.Tk <- res$cluster
+aux<-length(unique(res$cluster))
+mycolors <- colorRampPalette(brewer.pal(8, "Set2"))(aux)
+res
+
+ggplot(data = world) +
+    geom_sf(fill= "antiquewhite") +
+    annotation_scale(location = "tr", width_hint = 0.5) +
+    annotation_north_arrow(location = "tr", which_north = "true", 
+        pad_x = unit(0.5, "in"), pad_y = unit(0.5, "in"),
+        style = north_arrow_fancy_orienteering) +
+    coord_sf(xlim = c( longmin - 1 , longmax + 1 ), ylim = c(latmin - 1 , latmax + 4), expand = FALSE) + theme(panel.grid.major = element_line(color = gray(.5), linetype = "dashed", size = 0.5), panel.background = element_rect(fill = "aliceblue")) +
+    geom_point(data = S.Mag0, aes(x = Longitude , y = Latitude), size = 0.01, shape = 1 , col = cluster.Tk+1)+ scale_fill_manual(values = mycolors)
+ggsave("mapTk1.pdf")
+```
+
+```{r}
+dist.Tk2 <- matrix(0,nrow = nrow(S.Mag0),ncol = nrow(S.Mag0))
+kt<-0.20
+ks<-0.05
+for(i in c(1:nrow(S.Mag0))){
+    p1 <- c(S.Mag0[i,]);
+    for(j in c(1:i)){
+        p2 <- c(S.Mag0[j,])
+            dist.Tk2[i,j] <-kt*(p1$Date-p2$Date)^2+ (1-ks*max(p1$Magnitude,p2$Magnitude))*distHaversine(c(p1$Longitude,p1$Latitude),c(p2$Longitude,p2$Latitude), r=6378137/1000)
+        }
+}
+dist.Tk2 <- as.dist(dist.Tk2)
+```
+
+```{r}
+res <- dbscan(dist.Tk2, eps = 1/(1-kt)*15, minPts = 5,borderPoints = T)
+cluster.Tk2 <- res$cluster
+aux<-length(unique(res$cluster))
+mycolors <- colorRampPalette(brewer.pal(8, "Set2"))(aux)
+res
+
+ggplot(data = world) +
+    geom_sf(fill= "antiquewhite") +
+    annotation_scale(location = "tr", width_hint = 0.5) +
+    annotation_north_arrow(location = "tr", which_north = "true", 
+        pad_x = unit(0.5, "in"), pad_y = unit(0.5, "in"),
+        style = north_arrow_fancy_orienteering) +
+    coord_sf(xlim = c( longmin - 1 , longmax + 1 ), ylim = c(latmin - 1 , latmax + 4), expand = FALSE) + theme(panel.grid.major = element_line(color = gray(.5), linetype = "dashed", size = 0.5), panel.background = element_rect(fill = "aliceblue")) +
+    geom_point(data = S.Mag0, aes(x = Longitude , y = Latitude), size = 0.01, shape = 1 , col = cluster.Tk2+1)+ scale_fill_manual(values = mycolors)
+ggsave("mapTk2.pdf")
+```
+
+```{r}
+dist.Tk3 <- matrix(0,nrow = nrow(S.Mag0),ncol = nrow(S.Mag0))
+kt<-0.20
+ks<-0.1
+for(i in c(1:nrow(S.Mag0))){
+    p1 <- c(S.Mag0[i,]);
+    for(j in c(1:i)){
+        p2 <- c(S.Mag0[j,])
+            dist.Tk3[i,j] <-kt*(p1$Date-p2$Date)^2+ (1-ks*max(p1$Magnitude,p2$Magnitude))*distHaversine(c(p1$Longitude,p1$Latitude),c(p2$Longitude,p2$Latitude), r=6378137/1000)
+        }
+}
+dist.Tk3 <- as.dist(dist.Tk3)
+```
+
+```{r}
+res <- dbscan(dist.Tk3, eps = 1/(1-kt)*15, minPts = 5,borderPoints = T)
+cluster.Tk3 <- res$cluster
+aux<-length(unique(res$cluster))
+mycolors <- colorRampPalette(brewer.pal(8, "Set2"))(aux)
+res
+
+ggplot(data = world) +
+    geom_sf(fill= "antiquewhite") +
+    annotation_scale(location = "tr", width_hint = 0.5) +
+    annotation_north_arrow(location = "tr", which_north = "true", 
+        pad_x = unit(0.5, "in"), pad_y = unit(0.5, "in"),
+        style = north_arrow_fancy_orienteering) +
+    coord_sf(xlim = c( longmin - 1 , longmax + 1 ), ylim = c(latmin - 1 , latmax + 4), expand = FALSE) + theme(panel.grid.major = element_line(color = gray(.5), linetype = "dashed", size = 0.5), panel.background = element_rect(fill = "aliceblue")) +
+    geom_point(data = S.Mag0, aes(x = Longitude , y = Latitude), size = 0.01, shape = 1 , col = cluster.Tk3+1)+ scale_fill_manual(values = mycolors)
+ggsave("mapTk3.pdf")
+```
+
+```{r}
+S.Mag0.Tk <- S.Mag0
+S.Mag0.Tk$clusters <- as.factor(cluster.Tk3)
+S.Mag0.Tk <- S.Mag0.Tk[S.Mag0.Tk$clusters != 0,]
+S.Mag0.Tk
+
+fig <- plot_ly(data = S.Mag0.Tk , x = ~Longitude, y=~Latitude, z=~Date, color = ~clusters, colors = mycolors, marker = list(symbol = 'circle', sizemode = 'diameter'), size = ~Magnitude, sizes = c(1,25))
+fig <- fig %>% add_markers()
+fig <- fig %>% layout(scene = list(xaxis = list(title = 'Longitude'), yaxis = list(title = 'Latitude'),zaxis = list(title = 'Time')))
+fig
+```
+
+
+
+```{r}
+dist.Tk4 <- matrix(0,nrow = nrow(S.Mag0),ncol = nrow(S.Mag0))
+kt<-0.25
+ks<-0.1
+for(i in c(1:nrow(S.Mag0))){
+    p1 <- c(S.Mag0[i,]);
+    for(j in c(1:i)){
+        p2 <- c(S.Mag0[j,])
+            dist.Tk4[i,j] <-kt*(p1$Date-p2$Date)^2+ (1-ks*max(p1$Magnitude,p2$Magnitude))*distHaversine(c(p1$Longitude,p1$Latitude),c(p2$Longitude,p2$Latitude), r=6378137/1000)
+        }
+}
+dist.Tk4 <- as.dist(dist.Tk4)
+```
+
+```{r}
+res <- dbscan(dist.Tk4, eps = 1/(1-kt)*15, minPts = 5,borderPoints = T)
+cluster.Tk4 <- res$cluster
+res
+
+aux <- which(cluster.Tk4 == 24);
+cluster.Tk4[aux]<-35
+
+S.Mag0.select <- S.Mag0[which(cluster.Tk4!=0),]
+cluster.Tk4 <- cluster.Tk4[cluster.Tk4!=0];
+
+
+#S.Mag0.select.16 <- S.Mag0[which(cluster.Tk4==24),]
+#S.Mag0.select.16
+
+ggplot(data = world) +
+    geom_sf(fill= "antiquewhite") +
+    annotation_scale(location = "tr", width_hint = 0.5) +
+    annotation_north_arrow(location = "tr", which_north = "true", 
+        pad_x = unit(0.5, "in"), pad_y = unit(0.5, "in"),
+        style = north_arrow_fancy_orienteering) +
+    coord_sf(xlim = c( longmin - 1 , longmax + 1 ), ylim = c(latmin - 1 , latmax + 4), expand = FALSE) + theme(panel.grid.major = element_line(color = gray(.5), linetype = "dashed", size = 0.5), panel.background = element_rect(fill = "aliceblue")) +
+    geom_point(data = S.Mag0.select, aes(x = Longitude , y = Latitude), size = 0.01, shape = 1 , col = cluster.Tk4 + 2 )
+ggsave("mapTk4.pdf")
+```
+
+
+```{r}
+S.Mag0.Tk4 <- S.Mag0.select
+S.Mag0.Tk4$clusters <- as.factor(cluster.Tk4)
+S.Mag0.Tk4 
+
+fig <- plot_ly(data = S.Mag0.Tk4 , x = ~Longitude, y=~Latitude, z=~Date, color = ~clusters, colors = mycolors, marker = list(symbol = 'circle', sizemode = 'diameter'), size = ~Magnitude/2, sizes = c(1,25))
+fig <- fig %>% add_markers()
+fig <- fig %>% layout(scene = list(xaxis = list(title = 'Longitude'), yaxis = list(title = 'Latitude'),zaxis = list(title = 'Time')))
+fig
+```
+
+
+# DBSCAN with all records 
+
+```{r}
+dist.A.ST <- matrix(0,nrow = nrow(dataPC),ncol = nrow(dataPC))
+kt<-0.25
+ks<-0.05
+for(i in c(1:nrow(dataPC))){
+    p1 <- c(dataPC[i,]);
+    for(j in c(1:i)){
+        p2 <- c(dataPC[j,])
+            dist.A.ST[i,j] <-kt*(p1$Date-p2$Date)^2+ (1-ks*max(p1$Magnitude,p2$Magnitude))*distHaversine(c(p1$Longitude,p1$Latitude),c(p2$Longitude,p2$Latitude), r=6378137/1000)
+        }
+}
+dist.A.ST <- as.dist(dist.A.ST)
+```
+
+
+```{r}
+res <- dbscan(dist.A.ST, eps = 1/(1-kt)*15, minPts = 5,borderPoints = T)
+cluster.A.ST <- res$cluster
+length(unique(res$cluster))
+res
+
+ggplot(data = world) +
+    geom_sf(fill= "antiquewhite") +
+    annotation_scale(location = "tr", width_hint = 0.5) +
+    annotation_north_arrow(location = "tr", which_north = "true", 
+        pad_x = unit(0.5, "in"), pad_y = unit(0.5, "in"),
+        style = north_arrow_fancy_orienteering) +
+    coord_sf(xlim = c( longmin - 1 , longmax + 1 ), ylim = c(latmin - 1 , latmax + 4), expand = FALSE) + theme(panel.grid.major = element_line(color = gray(.5), linetype = "dashed", size = 0.5), panel.background = element_rect(fill = "aliceblue")) +
+    geom_point(data = dataPC, aes(x = Longitude , y = Latitude), size =0.05, shape = 1 , col = cluster.A.ST+1)
+ggsave("mapAST.pdf")
+
+
+S.Tk <- dataPC
+S.Tk$clusters <- as.factor(cluster.A.ST)
+S.Tk <- S.Tk[S.Tk$clusters != 0,]
+S.Tk
+
+fig <- plot_ly(data = S.Tk , x = ~Longitude, y=~Latitude,z=~Date, color = ~clusters, colors = mycolors, size = 3)
+fig <- fig %>% add_markers()
+fig <- fig %>% layout(scene = list(xaxis = list(title = 'Longitude'), yaxis = list(title = 'Latitude'),zaxis = list(title = 'Time')), width = 1)
+fig
+```
+
+# Simulation
+
+```{r}
+library(RColorBrewer)
+# Define the number of colors you want
+nb.cols <- 18
+mycolors <- colorRampPalette(brewer.pal(8, "Set2"))(nb.cols)
+```
+
+
+```{r}
+library(plotly)
+
+data.sim <- S.Mag0[S.Mag0$Longitude<= -7.5,c(2,3)]
+data.sim <- data.sim[data.sim$Longitude>= -9.0,]
+data.sim <- data.sim[data.sim$Latitude>=38.0,]
+data.sim <- data.sim[data.sim$Latitude<=39.5,]
+
+set.seed(11)
+Date <- rnorm(60,1920,6)
+Date <- c(Date, rnorm(60,1950,6))
+Date <- c(Date, rnorm(60,1980,6))
+length(Date)
+
+lat <- sample(data.sim$Latitude,180)
+long <- sample(data.sim$Longitude,180)
+mag <- sample(S.Mag0$Magnitude,180)
+
+sim.data <- cbind(Date,lat,long,mag)
+sim.data <- as.data.frame(sim.data)
+
+
+ggplot(data = world) +
+    geom_sf(fill= "antiquewhite") +
+    annotation_scale(location = "tr", width_hint = 0.5) +
+    annotation_north_arrow(location = "tr", which_north = "true", 
+        pad_x = unit(0.5, "in"), pad_y = unit(0.5, "in"),
+        style = north_arrow_fancy_orienteering) +
+    coord_sf(xlim = c(longmin - 1 , longmax + 1 ), ylim = c(latmin - 1 , latmax + 4), expand = FALSE) + theme(panel.grid.major = element_line(color = gray(.5), linetype = "dashed", size = 0.5), panel.background = element_rect(fill = "aliceblue")) +
+    geom_point(data = sim.data, aes(x = long , y = lat), size =0.05, shape = 1 , col =1)
+
+
+
+fig <- plot_ly(data = sim.data, x = ~long, y=~lat,z=~Date, marker = list(symbol = 'circle', sizemode = 'diameter'), size = ~mag, sizes = c(1,25))
+fig <- fig %>% add_markers()
+fig <- fig %>% layout(scene = list(xaxis = list(title = 'Longitude'),
+                     yaxis = list(title = 'Latitude'),
+                     zaxis = list(title = 'Time')))
+fig
+```
+
+```{r}
+dist.sim <- matrix(0,nrow = nrow(sim.data),ncol = nrow(sim.data))
+for(i in c(1:nrow(sim.data))){
+    p1 <- c(sim.data[i,]);
+    for(j in c(1:i)){
+        p2 <- c(sim.data[j,]);
+        dist.sim[i,j] <- distHaversine(c(p1$long,p1$lat),c(p2$long,p2$lat), r=6378137/1000)
+    }
+}
+dist.sim <- as.dist(dist.sim)
+
+res<- dbscan(dist.sim,eps = 20,minPts = 5)
+
+res
+
+sim.data$cluster <- as.factor(res$cluster)
+
+ggplot(data = world) +
+    geom_sf(fill= "antiquewhite") +
+    annotation_scale(location = "tr", width_hint = 0.5) +
+    annotation_north_arrow(location = "tr", which_north = "true", 
+        pad_x = unit(0.5, "in"), pad_y = unit(0.5, "in"),
+        style = north_arrow_fancy_orienteering) +
+    coord_sf(xlim = c(longmin - 1 , longmax + 1 ), ylim = c(latmin - 1 , latmax + 4), expand = FALSE) + theme(panel.grid.major = element_line(color = gray(.5), linetype = "dashed", size = 0.5), panel.background = element_rect(fill = "aliceblue")) +
+    geom_point(data = sim.data, aes(x = long , y = lat), size =0.05, shape = 1 , col =sim.data$cluster)+scale_fill_manual(values = mycolors)
+
+
+fig <- plot_ly(data = sim.data, x = ~long, y=~lat,z=~Date, color = ~cluster, colors = mycolors, marker = list(symbol = 'circle', sizemode = 'diameter'), size = ~mag, sizes = c(1,25))
+fig <- fig %>% add_markers()
+fig <- fig %>% layout(scene = list(xaxis = list(title = 'Longitude'),
+                     yaxis = list(title = 'Latitude'),
+                     zaxis = list(title = 'Time')))
+fig
+```
+
+
+```{r}
+dist.T.sim <- matrix(0,nrow = nrow(sim.data),ncol = nrow(sim.data))
+kt<-0.25
+k<-0.05
+for(i in c(1:nrow(sim.data))){
+    p1 <- c(sim.data[i,]);
+    for(j in c(1:i)){
+        p2 <- c(sim.data[j,])
+        if(abs(p1$Date-p2$Date)<=10){
+            dist.T.sim[i,j] <- kt*(p1$Date-p2$Date)^2+ (1-k*max(p1$mag,p2$mag))*distHaversine(c(p1$long,p1$lat),c(p2$long,p2$lat), r=6378137/1000)
+        }
+        else{
+            dist.T.sim[i,j] <- 6378137/1000
+        }
+    }
+}
+dist.T.sim <- as.dist(dist.T.sim)
+
+res<- dbscan(dist.T.sim,eps = 1/(1-kt)*20,minPts = 5)
+
+res
+
+sim.data$cluster <- as.factor(res$cluster)
+
+
+sim.data$cluster <- as.factor(res$cluster)
+
+ggplot(data = world) +
+    geom_sf(fill= "antiquewhite") +
+    annotation_scale(location = "tr", width_hint = 0.5) +
+    annotation_north_arrow(location = "tr", which_north = "true", 
+        pad_x = unit(0.5, "in"), pad_y = unit(0.5, "in"),
+        style = north_arrow_fancy_orienteering) +
+    coord_sf(xlim = c(longmin - 1 , longmax + 1 ), ylim = c(latmin - 1 , latmax + 4), expand = FALSE) + theme(panel.grid.major = element_line(color = gray(.5), linetype = "dashed", size = 0.5), panel.background = element_rect(fill = "aliceblue")) +
+    geom_point(data = sim.data, aes(x = long , y = lat), size =0.05, shape = 1 , col =sim.data$cluster)+scale_fill_manual(values = mycolors)
+
+
+fig <- plot_ly(data = sim.data, x = ~long, y=~lat,z=~Date, color = ~cluster, colors = mycolors)
+fig <- fig %>% add_markers()
+fig <- fig %>% layout(scene = list(xaxis = list(title = 'Longitude'),
+                     yaxis = list(title = 'Latitude'),
+                     zaxis = list(title = 'Time')))
+fig
+
+```
+
+```{r}
+dist.T.sim <- matrix(0,nrow = nrow(sim.data),ncol = nrow(sim.data))
+kt<-0.5
+ks<-0.05
+for(i in c(1:nrow(sim.data))){
+    p1 <- c(sim.data[i,]);
+    for(j in c(1:i)){
+        p2 <- c(sim.data[j,])
+        dist.T.sim[i,j] <-kt*(p1$Date-p2$Date)^2+ (1-ks*max(p1$mag,p2$mag))*distHaversine(c(p1$long,p1$lat),c(p2$long,p2$lat), r=6378137/1000)
+        }
+}
+dist.T.sim <- as.dist(dist.T.sim)
+
+res<- dbscan(dist.T.sim,eps =  1/(1-kt)*20,minPts = 5)
+
+res
+
+sim.data$cluster <- as.factor(res$cluster)
+
+
+sim.data$cluster <- as.factor(res$cluster)
+
+ggplot(data = world) +
+    geom_sf(fill= "antiquewhite") +
+    annotation_scale(location = "tr", width_hint = 0.5) +
+    annotation_north_arrow(location = "tr", which_north = "true", 
+        pad_x = unit(0.5, "in"), pad_y = unit(0.5, "in"),
+        style = north_arrow_fancy_orienteering) +
+    coord_sf(xlim = c(longmin - 1 , longmax + 1 ), ylim = c(latmin - 1 , latmax + 4), expand = FALSE) + theme(panel.grid.major = element_line(color = gray(.5), linetype = "dashed", size = 0.5), panel.background = element_rect(fill = "aliceblue")) +
+    geom_point(data = sim.data, aes(x = long , y = lat), size =0.05, shape = 1 , col =sim.data$cluster)+scale_fill_manual(values = mycolors)
+
+
+fig <- plot_ly(data = sim.data, x = ~long, y=~lat,z=~Date, color = ~cluster,marker = list(symbol = 'circle', sizemode = 'diameter'), size = ~mag, sizes = c(1,25))
+fig <- fig %>% add_markers()
+fig <- fig %>% layout(scene = list(xaxis = list(title = 'Longitude'),
+                     yaxis = list(title = 'Latitude'),
+                     zaxis = list(title = 'Time')))
+fig
+```
+
+
+
+
+
+
+
+
+
+
